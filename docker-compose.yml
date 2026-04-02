@@ -1,0 +1,22 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: synapse-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-synapse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-synapse_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-synapse}
+    ports:
+      - "5433:5432"
+    volumes:
+      - synapse_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U synapse -d synapse"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  synapse_pgdata:
+    driver: local

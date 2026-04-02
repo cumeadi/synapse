@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "synapse-core"
+version = "0.1.0"
+description = "Official Python SDK for the Synapse Cognitive Memory Engine."
+readme = "README.md"
+authors = [
+    { name = "Synapse Team" }
+]
+requires-python = ">=3.10"
+dependencies = [
+    "httpx>=0.28.0",
+    "pydantic>=2.10.0",
+    "tenacity>=8.5.0"
+]
+
+[project.urls]
+Homepage = "https://github.com/synapse/synapse"

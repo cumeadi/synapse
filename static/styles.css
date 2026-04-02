@@ -1,0 +1,32 @@
+/* Synapse Studio Custom Styles */
+
+/* Ensure the vis-network canvas fills the container properly */
+#graph-container canvas {
+    outline: none;
+}
+
+/* Custom tooltip styling for vis-network */
+div.vis-tooltip {
+    background-color: #1f2937 !important; /* Tailwind gray-800 */
+    border: 1px solid #374151 !important; /* Tailwind gray-700 */
+    border-radius: 0.375rem !important; /* rounded-md */
+    color: #f3f4f6 !important; /* Tailwind gray-100 */
+    font-family: inherit !important;
+    font-size: 0.875rem !important;
+    padding: 0.5rem 0.75rem !important;
+    box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5), 0 4px 6px -2px rgba(0, 0, 0, 0.25) !important;
+}
+
+/* Custom scrollbar for inspector panel */
+#inspector-content::-webkit-scrollbar {
+    width: 6px;
+}
+
+#inspector-content::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+#inspector-content::-webkit-scrollbar-thumb {
+    background-color: #4b5563; /* Tailwind gray-600 */
+    border-radius: 20px;
+}
