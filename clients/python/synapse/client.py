@@ -167,6 +167,23 @@ class SynapseClient:
         except httpx.RequestError as e:
             raise APIError(f"Network error during repo learning: {str(e)}") from e
         
+    @retry(
+        retry=(retry_if_exception_type(httpx.RequestError) | retry_if_exception_type(RetryableAPIError)),
+        wait=wait_exponential(multiplier=2, min=2, max=30),
+        stop=stop_after_attempt(3),
+        reraise=True
+    )
+    async def sleep(self, namespace: str) -> Dict[str, Any]:
+        """Trigger the background memory consolidation (Sleep Cycle) for a namespace."""
+        ns_id = await self._resolve_namespace(namespace)
+        try:
+            res = await self.http_client.post(f"/namespaces/{ns_id}/sleep")
+            _raise_for_status(res)
+            return res.json()
+        except httpx.RequestError as e:
+            raise APIError(f"Network error during sleep cycle trigger: {str(e)}") from e
+            
+        
     async def close(self):
         """Close the underlying HTTPX client. Prefer using `async with` context manager."""
         if not self.http_client.is_closed:

@@ -59,6 +59,10 @@ async def main():
     print(context) 
     # Returns the vector match + the exact graph path: [User] -> [MIGRATING_TO] -> [FastAPI]
 
+    # 3. Trigger the Sleep Cycle (Memory Consolidation)
+    # Merges duplicate entities and prunes contradictions in the background
+    await client.sleep(namespace="dev_agent")
+
 asyncio.run(main())
 ```
 

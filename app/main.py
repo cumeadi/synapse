@@ -50,7 +50,7 @@ from app.schemas import (
     EdgeTraceResponse,
     NamespaceListResponse
 )
-from app.services import graph_search, hybrid_search, ingest_memory
+from app.services import graph_search, hybrid_search, ingest_memory, run_sleep_cycle
 from app.connectors.github import ingest_github_repo
 from app.services.grafting import run_grafting_cycle
 from app.services.studio import get_full_graph, delete_entity, delete_relationship, trace_relationship
@@ -232,6 +232,32 @@ async def create_memory(
         status="accepted",
         message="Memory ingestion is processing in the background.",
     )
+
+# ────────────────────────────────────────────────────────────────────
+# Routes: Sleep Cycle (Consolidation)
+# ────────────────────────────────────────────────────────────────────
+@app.post(
+    "/namespaces/{namespace_id}/sleep",
+    status_code=202,
+)
+async def trigger_sleep_cycle(
+    namespace_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    _auth: Optional[ApiKey] = Depends(verify_api_key),
+):
+    """
+    Manually trigger the Sleep Cycle (entity disambiguation and contradiction pruning).
+    Runs asynchronously in the background.
+    """
+    ns = await db.get(Namespace, namespace_id)
+    if not ns:
+        raise HTTPException(status_code=404, detail="Namespace not found.")
+
+    background_tasks.add_task(run_sleep_cycle, namespace_id=namespace_id)
+
+    return {"status": "accepted", "message": "Sleep cycle scheduled in the background."}
+
 
 
 # ────────────────────────────────────────────────────────────────────

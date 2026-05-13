@@ -11,3 +11,4 @@ from app.services.core import (  # noqa: F401
     LLM_MODEL,
     EMBEDDING_MODEL,
 )
+from app.services.sleep import run_sleep_cycle  # noqa: F401

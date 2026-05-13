@@ -164,6 +164,28 @@ class GraftingExtraction(BaseModel):
 
 
 # ────────────────────────────────────────────────────────────────────
+# Sleep Cycle / Consolidation Schemas (used with litellm structured outputs)
+# ────────────────────────────────────────────────────────────────────
+class SynonymGroup(BaseModel):
+    """A group of entity names that all refer to the exact same concept."""
+    canonical_name: str = Field(description="The preferred name for the merged entity")
+    aliases: List[str] = Field(description="List of other names that should be merged into the canonical name")
+
+class DisambiguationResult(BaseModel):
+    """Result of the entity disambiguation process."""
+    synonym_groups: List[SynonymGroup] = Field(default_factory=list)
+
+class ContradictionResolution(BaseModel):
+    """Action to resolve a contradiction."""
+    relationship_id: str = Field(description="The UUID of the relationship to prune/invalidate")
+    reason: str = Field(description="Explanation of why this relationship is invalid based on context")
+
+class ContradictionResult(BaseModel):
+    """Result of the contradiction pruning process."""
+    resolutions: List[ContradictionResolution] = Field(default_factory=list)
+
+
+# ────────────────────────────────────────────────────────────────────
 # Knowledge Source API Schemas
 # ────────────────────────────────────────────────────────────────────
 class GitHubSourceCreate(BaseModel):
