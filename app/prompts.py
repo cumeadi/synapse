@@ -16,13 +16,19 @@ Rules:
 3. The primary subject is always named 'User'.
 4. Use UPPER_SNAKE_CASE verbs for relations (e.g., 'USES', 'WORKS_AT', 'DISLIKES').
 5. Only extract facts that would still be true tomorrow — skip ephemeral info.
-6. Return strict JSON matching the schema. If no permanent memories exist, \
+6. Epistemic Humility: Classify subjective judgments, opinions, or estimates as \
+'TAKE' in the `epistemic_state` field. Objective events and hard truths are 'FACT'.
+7. Return strict JSON matching the schema. If no permanent memories exist, \
 return empty arrays.
 
 Examples of good extractions:
 - "I love Python and work at Google" ->
-  entities: [User/Person, Python/Technology, Google/Organization]
-  relationships: [User PREFERS Python, User WORKS_AT Google]
+  entities: [User/Person/FACT, Python/Technology/FACT, Google/Organization/FACT]
+  relationships: [User PREFERS Python (FACT), User WORKS_AT Google (FACT)]
+
+- "The new DevOps team is moving too fast" ->
+  entities: [DevOps Team/Organization/FACT]
+  relationships: [DevOps Team IS_MOVING_TOO_FAST User (TAKE)]
 
 - "Can you help me debug this?" ->
   entities: []  relationships: []  (no permanent facts)

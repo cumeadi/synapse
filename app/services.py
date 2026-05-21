@@ -7,6 +7,7 @@ and graph neighborhood traversal.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import logging
 import os
 import uuid
@@ -24,6 +25,7 @@ from app.schemas import (
     ExtractedRelationship,
     MemoryExtraction,
 )
+from app.services.policy import permitted_labels
 
 logger = logging.getLogger("synapse.services")
 
@@ -63,8 +65,17 @@ async def ingest_memory(
             await db.flush()
             logger.info(f"Memory {memory_id} saved with embedding.")
 
-            # ── Step 3: Extract entities & relationships via LLM ──
-            extraction = await _extract_knowledge(content)
+            # ── Step 3: Extract entities & relationships ──────────
+            # Try Zero-LLM heuristic extraction first
+            from app.services.heuristics import run_heuristics
+            extraction = run_heuristics(content)
+            
+            if extraction:
+                logger.info("Heuristic extraction succeeded (Zero-LLM).")
+            else:
+                logger.info("Heuristics failed, falling back to LLM extraction.")
+                extraction = await _extract_knowledge(content)
+                
             logger.info(
                 f"Extracted {len(extraction.entities)} entities, "
                 f"{len(extraction.relationships)} relationships."
@@ -74,13 +85,13 @@ async def ingest_memory(
             entity_map: dict[str, Entity] = {}
             for ext_entity in extraction.entities:
                 entity = await _upsert_entity(
-                    db, namespace_id, ext_entity
+                    db, namespace_id, ext_entity, memory_id
                 )
                 entity_map[ext_entity.name] = entity
 
             # ── Step 5: Insert relationships ──────────────────────
             for ext_rel in extraction.relationships:
-                await _upsert_relationship(db, entity_map, ext_rel)
+                await _upsert_relationship(db, entity_map, ext_rel, memory_id)
 
             await db.commit()
             logger.info(f"Ingestion complete for memory {memory_id}.")
@@ -123,8 +134,11 @@ async def _upsert_entity(
     db: AsyncSession,
     namespace_id: uuid.UUID,
     ext_entity: ExtractedEntity,
+    context_id: uuid.UUID | None = None,
 ) -> Entity:
     """Insert entity if it doesn't exist, otherwise return existing."""
+    from app.services.confidence import update_entity_confidence
+
     stmt = select(Entity).where(
         and_(
             Entity.namespace_id == namespace_id,
@@ -135,12 +149,19 @@ async def _upsert_entity(
     existing = result.scalar_one_or_none()
 
     if existing:
+        existing.observation_count += 1
+        await db.flush()
+        await update_entity_confidence(db, existing.id)
         return existing
 
     entity = Entity(
         namespace_id=namespace_id,
         name=ext_entity.name,
         entity_type=ext_entity.entity_type,
+        epistemic_state=ext_entity.epistemic_state,
+        visibility_label="public",  # Phase 3 ABAC default
+        observation_count=1,
+        confidence=0.5,
     )
     db.add(entity)
     await db.flush()
@@ -151,8 +172,14 @@ async def _upsert_relationship(
     db: AsyncSession,
     entity_map: dict[str, Entity],
     ext_rel: ExtractedRelationship,
+    context_id: uuid.UUID | None = None,
 ) -> Optional[Relationship]:
     """Insert relationship if both entities exist and it's not a duplicate."""
+    from app.services.confidence import (
+        detect_and_flag_contradictions,
+        update_relationship_confidence,
+    )
+
     source = entity_map.get(ext_rel.source)
     target = entity_map.get(ext_rel.target)
 
@@ -177,15 +204,35 @@ async def _upsert_relationship(
     if existing:
         # Reinforce weight on repeated observations
         existing.weight = existing.weight + 1.0
+        existing.last_reinforced_at = datetime.now(timezone.utc)
+
+        # Phase 4: Diversity tracking
+        # We use last_context_id on Relationship to detect new sources/memories.
+        if context_id and existing.last_context_id != context_id:
+            existing.source_diversity_count += 1
+            existing.last_context_id = context_id
+            
+        await db.flush()
+        
+        await update_relationship_confidence(db, existing)
+        await db.flush()
         return existing
 
     rel = Relationship(
         source_entity_id=source.id,
         target_entity_id=target.id,
         relation_type=ext_rel.relation,
+        epistemic_state=ext_rel.epistemic_state,
         weight=1.0,
+        last_context_id=context_id,
+        source_diversity_count=1,
+        confidence=0.5,
+        has_contradiction=False,
     )
     db.add(rel)
+    await db.flush()
+    
+    await update_relationship_confidence(db, rel)
     await db.flush()
     return rel
 
@@ -243,6 +290,9 @@ async def graph_search(
     namespace_id: uuid.UUID,
     entity_name: str,
     depth: int = 1,
+    threshold: float = 0.2,
+    role: str = "internal",
+    min_confidence: float = 0.0,
 ) -> dict:
     """
     Given an entity name, return its neighborhood up to `depth` hops
@@ -266,37 +316,69 @@ async def graph_search(
     if depth > 3:
         depth = 3
 
+    # Resolve permitted visibility labels for the caller's role
+    visible_labels = permitted_labels(role)
+
     # Recursive CTE to traverse graph edges up to `depth` hops
-    # We collect all entity IDs reachable within the depth
-    collected_entity_ids = {center.id}
-    current_frontier = {center.id}
+    # We only traverse relationships that have not decayed below the threshold
+    # AND whose visibility label is within the caller's clearance
+    cte_query = text("""
+    WITH RECURSIVE traversal(entity_id, path_depth) AS (
+        -- Anchor member: start at center entity (no label check — caller already resolved it)
+        SELECT CAST(:center_id AS UUID) AS entity_id, 0 AS path_depth
 
-    for _ in range(depth):
-        if not current_frontier:
-            break
+        UNION
 
-        # Find all entities connected to the current frontier
-        outgoing = select(Relationship.target_entity_id).where(
-            Relationship.source_entity_id.in_(current_frontier)
+        -- Recursive member: traverse only permitted, non-decayed edges
+        SELECT DISTINCT
+            CASE
+                WHEN r.source_entity_id = t.entity_id THEN r.target_entity_id
+                ELSE r.source_entity_id
+            END AS entity_id,
+            t.path_depth + 1 AS path_depth
+        FROM traversal t
+        JOIN relationships r ON (r.source_entity_id = t.entity_id OR r.target_entity_id = t.entity_id)
+        JOIN entities e ON e.id = CASE
+            WHEN r.source_entity_id = t.entity_id THEN r.target_entity_id
+            ELSE r.source_entity_id
+        END
+        WHERE t.path_depth < :max_depth
+          AND (r.weight * EXP(-r.weight_decay_rate * (EXTRACT(EPOCH FROM (NOW() - r.last_reinforced_at)) / 86400.0))) >= :threshold
+          AND r.visibility_label = ANY(:visible_labels)
+          AND e.visibility_label = ANY(:visible_labels)
+          AND r.confidence >= :min_confidence
+          AND e.confidence >= :min_confidence
+    )
+    SELECT DISTINCT entity_id FROM traversal;
+    """)
+
+    result = await db.execute(
+        cte_query,
+        {
+            "center_id": str(center.id),
+            "max_depth": depth,
+            "threshold": threshold,
+            "visible_labels": visible_labels,
+            "min_confidence": min_confidence,
+        }
+    )
+    collected_entity_ids = {row[0] for row in result.all()}
+
+    if not collected_entity_ids:
+        collected_entity_ids = {center.id}
+
+    # Fetch all entities in the neighborhood — filtered by visibility and confidence
+    entities_stmt = select(Entity).where(
+        and_(
+            Entity.id.in_(collected_entity_ids),
+            Entity.visibility_label.in_(visible_labels),
+            Entity.confidence >= min_confidence,
         )
-        incoming = select(Relationship.source_entity_id).where(
-            Relationship.target_entity_id.in_(current_frontier)
-        )
-
-        combined = union_all(outgoing, incoming)
-        result = await db.execute(combined)
-        neighbor_ids = {row[0] for row in result.all()}
-
-        new_ids = neighbor_ids - collected_entity_ids
-        collected_entity_ids |= new_ids
-        current_frontier = new_ids
-
-    # Fetch all entities in the neighborhood
-    entities_stmt = select(Entity).where(Entity.id.in_(collected_entity_ids))
+    )
     result = await db.execute(entities_stmt)
     entities = result.scalars().all()
 
-    # Fetch all relationships between collected entities
+    # Fetch relationships between collected entities — filtered by visibility + decay + confidence
     rels_stmt = (
         select(Relationship)
         .options(
@@ -307,6 +389,12 @@ async def graph_search(
             and_(
                 Relationship.source_entity_id.in_(collected_entity_ids),
                 Relationship.target_entity_id.in_(collected_entity_ids),
+                Relationship.visibility_label.in_(visible_labels),
+                Relationship.confidence >= min_confidence,
+                (Relationship.weight * text(
+                    "EXP(-relationships.weight_decay_rate * "
+                    "(EXTRACT(EPOCH FROM (NOW() - relationships.last_reinforced_at)) / 86400.0))"
+                )) >= threshold
             )
         )
     )

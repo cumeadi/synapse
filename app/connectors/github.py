@@ -307,6 +307,7 @@ async def _upsert_relationship_with_source(
 
     if existing:
         existing.weight = existing.weight + 1.0
+        existing.last_reinforced_at = datetime.now(timezone.utc)
         return existing
 
     rel = Relationship(

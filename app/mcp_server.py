@@ -21,6 +21,7 @@ from app.models import KnowledgeSource, Namespace
 from app.services import graph_search, hybrid_search, ingest_memory
 from app.connectors.github import ingest_github_repo
 from app.services.grafting import run_grafting_cycle
+from app.services.policy import DEFAULT_ROLE_MCP, validate_label
 
 from sqlalchemy import select
 
@@ -102,6 +103,7 @@ async def search_semantic(
     query: str,
     metadata_filter: Optional[dict[str, Any]] = None,
     top_k: int = 5,
+    role: str = DEFAULT_ROLE_MCP,
 ) -> str:
     """
     Search memories by semantic similarity. Uses vector cosine
@@ -112,6 +114,8 @@ async def search_semantic(
         query: Natural language search query.
         metadata_filter: Optional JSONB containment filter (e.g., {"source": "chat"}).
         top_k: Number of results to return (default 5).
+        role: ABAC role for visibility filtering (public|internal|confidential|restricted).
+              Defaults to 'public' for unauthenticated MCP callers.
 
     Returns:
         Formatted search results with content and similarity scores.
@@ -150,6 +154,8 @@ async def search_relational(
     namespace_name: str,
     entity_name: str,
     depth: int = 1,
+    role: str = DEFAULT_ROLE_MCP,
+    min_confidence: float = 0.0,
 ) -> str:
     """
     Query the knowledge graph for an entity's neighborhood.
@@ -159,6 +165,9 @@ async def search_relational(
         namespace_name: Name of the namespace to search in.
         entity_name: Name of the entity to look up (e.g., 'User', 'Python').
         depth: How many hops to traverse (1-3, default 1).
+        role: ABAC role for visibility filtering (public|internal|confidential|restricted).
+              Defaults to 'public' for unauthenticated MCP callers.
+        min_confidence: Minimum confidence score for entities/relationships (0.0 to 1.0).
 
     Returns:
         Formatted graph neighborhood with entities and relationships.
@@ -173,6 +182,8 @@ async def search_relational(
             namespace_id=ns_id,
             entity_name=entity_name,
             depth=min(max(depth, 1), 3),
+            role=role,
+            min_confidence=min_confidence,
         )
 
     if result is None:

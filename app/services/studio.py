@@ -13,43 +13,67 @@ from typing import Optional, Dict, Any
 
 from app.models import Entity, Relationship, Namespace, Memory
 from app.services.core import _generate_embedding
+from app.services.policy import permitted_labels
 
-async def get_full_graph(db: AsyncSession, namespace_id: uuid.UUID) -> dict[str, list]:
-    """Retrieve the entire graph formatted for VisNetwork."""
-    # Fetch all entities
-    ent_stmt = select(Entity).where(Entity.namespace_id == namespace_id)
+async def get_full_graph(
+    db: AsyncSession,
+    namespace_id: uuid.UUID,
+    role: str = "internal",
+    min_confidence: float = 0.0,
+) -> dict[str, list]:
+    """Retrieve the entire graph formatted for VisNetwork, filtered by caller's ABAC role."""
+    visible_labels = permitted_labels(role)
+
+    # Fetch all entities the caller is permitted to see
+    ent_stmt = select(Entity).where(
+        and_(
+            Entity.namespace_id == namespace_id,
+            Entity.visibility_label.in_(visible_labels),
+            Entity.confidence >= min_confidence,
+        )
+    )
     ent_result = await db.execute(ent_stmt)
     entities = ent_result.scalars().all()
-    
-    # Fetch all relationships with related entities (to get IDs if only filtering by namespace)
-    # We could also just fetch relationships where source_entity.namespace_id == namespace_id
+
+    # Fetch all permitted relationships where the source entity belongs to this namespace
     rel_stmt = (
         select(Relationship)
         .join(Entity, Relationship.source_entity_id == Entity.id)
-        .where(Entity.namespace_id == namespace_id)
+        .where(
+            and_(
+                Entity.namespace_id == namespace_id,
+                Relationship.visibility_label.in_(visible_labels),
+                Relationship.confidence >= min_confidence,
+            )
+        )
     )
     rel_result = await db.execute(rel_stmt)
     relationships = rel_result.scalars().all()
-    
+
     nodes = []
     edges = []
-    
+
     for ent in entities:
         nodes.append({
             "id": str(ent.id),
             "label": ent.name,
-            "group": ent.entity_type
+            "group": ent.entity_type,
+            "confidence": ent.confidence,
+            "epistemic_state": ent.epistemic_state,
         })
-        
+
     for rel in relationships:
         edges.append({
             "id": str(rel.id),
             "from": str(rel.source_entity_id),
             "to": str(rel.target_entity_id),
             "label": rel.relation_type,
-            "weight": rel.weight
+            "weight": rel.decayed_weight,
+            "confidence": rel.confidence,
+            "has_contradiction": rel.has_contradiction,
+            "epistemic_state": rel.epistemic_state,
         })
-        
+
     return {"nodes": nodes, "edges": edges}
 
 async def delete_entity(db: AsyncSession, namespace_id: uuid.UUID, entity_id: uuid.UUID) -> bool:

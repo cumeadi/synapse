@@ -22,6 +22,9 @@ class ExtractedEntity(BaseModel):
     entity_type: str = Field(
         ..., description="Category (e.g., 'Person', 'Technology', 'Organization')"
     )
+    epistemic_state: str = Field(
+        default="FACT", description="'FACT' for objective reality, 'TAKE' for subjective opinions"
+    )
 
 
 class ExtractedRelationship(BaseModel):
@@ -34,6 +37,9 @@ class ExtractedRelationship(BaseModel):
     )
     relation: str = Field(
         ..., description="UPPER_SNAKE_CASE relationship (e.g., 'USES', 'DISLIKES')"
+    )
+    epistemic_state: str = Field(
+        default="FACT", description="'FACT' for objective reality, 'TAKE' for subjective opinions"
     )
 
 
@@ -52,6 +58,11 @@ class NamespaceCreate(BaseModel):
         ..., min_length=1, max_length=255,
         description="Unique name for the namespace",
         examples=["agent-alpha", "user-chikau"],
+    )
+    role: Optional[str] = Field(
+        default="internal",
+        description="ABAC role for the auto-generated API key (public|internal|confidential|restricted)",
+        examples=["internal"],
     )
 
 
@@ -98,6 +109,10 @@ class NamespaceResponse(BaseModel):
         default=None,
         description="API key (only returned on creation)",
     )
+    role: Optional[str] = Field(
+        default=None,
+        description="ABAC role granted to the auto-generated API key",
+    )
 
     model_config = {"from_attributes": True}
 
@@ -132,6 +147,10 @@ class GraphEntityResponse(BaseModel):
     id: uuid.UUID
     name: str
     entity_type: str
+    visibility_label: str = "public"
+    observation_count: int = 1
+    confidence: float = 0.5
+    epistemic_state: str = "FACT"
 
     model_config = {"from_attributes": True}
 
@@ -143,6 +162,11 @@ class GraphRelationshipResponse(BaseModel):
     target: GraphEntityResponse
     relation_type: str
     weight: float
+    visibility_label: str = "public"
+    source_diversity_count: int = 1
+    confidence: float = 0.5
+    has_contradiction: bool = False
+    epistemic_state: str = "FACT"
 
     model_config = {"from_attributes": True}
 
@@ -255,5 +279,41 @@ class NamespaceListResponse(BaseModel):
     id: uuid.UUID
     name: str
     created_at: datetime
-    
+
     model_config = {"from_attributes": True}
+
+
+# ────────────────────────────────────────────────────────────────────
+# Audit Log Schemas (Phase 3 ABAC)
+# ────────────────────────────────────────────────────────────────────
+class AuditLogResponse(BaseModel):
+    """A single audit log entry."""
+    id: uuid.UUID
+    namespace_id: uuid.UUID
+    api_key_id: Optional[uuid.UUID]
+    action: str
+    entity_name: Optional[str]
+    result_count: int
+    role_used: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class AuditLogListResponse(BaseModel):
+    """Paginated list of audit log entries."""
+    entries: List[AuditLogResponse]
+    total: int
+
+
+# ────────────────────────────────────────────────────────────────────
+# Webhook Ingestion Schemas (Phase 1 Ambient Ingestion)
+# ────────────────────────────────────────────────────────────────────
+class WebhookEventResponse(BaseModel):
+    """Response confirming a webhook event was accepted or skipped."""
+    status: str  # "accepted" | "skipped" | "challenge"
+    connector_type: str
+    event_id: str
+    event_type: str
+    message: str
+

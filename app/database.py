@@ -13,6 +13,9 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy import text
 from dotenv import load_dotenv
+import logging
+
+logger = logging.getLogger("synapse.database")
 
 load_dotenv()
 
@@ -56,3 +59,67 @@ async def init_db():
     async with engine.begin() as conn:
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         await conn.run_sync(Base.metadata.create_all)
+
+        # Phase 2: Dynamic migration for relationship temporal fields
+        await conn.execute(text(
+            "ALTER TABLE relationships ADD COLUMN IF NOT EXISTS "
+            "valid_from TIMESTAMP WITH TIME ZONE DEFAULT NOW()"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE relationships ADD COLUMN IF NOT EXISTS "
+            "last_reinforced_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE relationships ADD COLUMN IF NOT EXISTS "
+            "weight_decay_rate DOUBLE PRECISION DEFAULT 0.01"
+        ))
+
+        # Phase 3: ABAC — visibility labels on graph nodes/edges, role on API keys
+        await conn.execute(text(
+            "ALTER TABLE entities ADD COLUMN IF NOT EXISTS "
+            "visibility_label VARCHAR(32) DEFAULT 'public' NOT NULL"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE relationships ADD COLUMN IF NOT EXISTS "
+            "visibility_label VARCHAR(32) DEFAULT 'public' NOT NULL"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS "
+            "role VARCHAR(32) DEFAULT 'internal' NOT NULL"
+        ))
+
+        # Phase 4: Knowledge Confidence Scoring
+        await conn.execute(text(
+            "ALTER TABLE entities ADD COLUMN IF NOT EXISTS "
+            "observation_count INTEGER DEFAULT 1 NOT NULL"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE entities ADD COLUMN IF NOT EXISTS "
+            "confidence DOUBLE PRECISION DEFAULT 0.5 NOT NULL"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE relationships ADD COLUMN IF NOT EXISTS "
+            "source_diversity_count INTEGER DEFAULT 1 NOT NULL"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE relationships ADD COLUMN IF NOT EXISTS "
+            "confidence DOUBLE PRECISION DEFAULT 0.5 NOT NULL"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE relationships ADD COLUMN IF NOT EXISTS "
+            "has_contradiction BOOLEAN DEFAULT FALSE NOT NULL"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE relationships ADD COLUMN IF NOT EXISTS "
+            "last_context_id UUID"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE entities ADD COLUMN IF NOT EXISTS "
+            "epistemic_state VARCHAR(16) DEFAULT 'FACT' NOT NULL"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE relationships ADD COLUMN IF NOT EXISTS "
+            "epistemic_state VARCHAR(16) DEFAULT 'FACT' NOT NULL"
+        ))
+
+    logger.info("Database initialized successfully.")
