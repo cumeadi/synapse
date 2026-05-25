@@ -72,6 +72,9 @@ async def get_full_graph(
             "confidence": rel.confidence,
             "has_contradiction": rel.has_contradiction,
             "epistemic_state": rel.epistemic_state,
+            "trigger_condition": rel.trigger_condition,
+            "executable_payload": rel.executable_payload,
+            "status": rel.status,
         })
 
     return {"nodes": nodes, "edges": edges}
@@ -189,3 +192,31 @@ async def trace_relationship(db: AsyncSession, namespace_id: uuid.UUID, relation
         }
          
     return {"relationship_id": relationship_id, "matched_memory_id": None, "content": None, "score": 0.0, "explanation": "No matching memories found in semantic index."}
+
+
+async def update_reflex_status(
+    db: AsyncSession,
+    namespace_id: uuid.UUID,
+    relationship_id: uuid.UUID,
+    status: str,
+) -> bool:
+    """Updates the status of a reflex relationship (PROPOSED, ACTIVE, PAUSED)."""
+    stmt = (
+        select(Relationship)
+        .join(Entity, Relationship.source_entity_id == Entity.id)
+        .where(
+            and_(
+                Relationship.id == relationship_id,
+                Entity.namespace_id == namespace_id,
+            )
+        )
+    )
+    result = await db.execute(stmt)
+    rel = result.scalar_one_or_none()
+    
+    if not rel:
+        return False
+        
+    rel.status = status
+    await db.commit()
+    return True

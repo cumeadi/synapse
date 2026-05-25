@@ -33,7 +33,6 @@ logging.basicConfig(level=logging.INFO)
 # ────────────────────────────────────────────────────────────────────
 mcp = FastMCP(
     "Synapse",
-    description="Cognitive memory engine — store, search, and traverse agent memories.",
 )
 
 
@@ -208,6 +207,189 @@ async def search_relational(
         )
 
     return "\n".join(output_lines)
+
+
+# ────────────────────────────────────────────────────────────────────
+# Tool: store_reflex
+# ────────────────────────────────────────────────────────────────────
+@mcp.tool()
+async def store_reflex(
+    namespace_name: str,
+    trigger_condition: dict[str, Any],
+    executable_payload: str,
+    source_entity: str = "User",
+    target_entity: str = "Cerebellum",
+    relation_type: str = "REFLEX",
+) -> str:
+    """
+    Explicitly save a recurring workflow / procedural standing order as a reflex.
+    When a future query matches the trigger condition, Synapse will intercept
+    the search and return this standing order directly.
+
+    Args:
+        namespace_name: Name of the namespace to store the reflex in.
+        trigger_condition: A dictionary specifying context patterns (e.g. {"query": "pr review", "repo": "frontend"}).
+        executable_payload: The collapsed prompt or standing order the agent should execute.
+        source_entity: Name of the source entity (default "User").
+        target_entity: Name of the target entity (default "Cerebellum").
+        relation_type: Relationship type (default "REFLEX").
+
+    Returns:
+        Confirmation message with the reflex relationship ID.
+    """
+    from datetime import datetime, timezone
+    from app.services.core import _upsert_entity
+    from app.schemas import ExtractedEntity
+    from app.models import Relationship
+    from app.services.confidence import update_relationship_confidence
+    from sqlalchemy import and_
+
+    ns_id = await _resolve_namespace(namespace_name)
+    if not ns_id:
+        return f"Error: Namespace '{namespace_name}' not found. Create it first."
+
+    try:
+        async with async_session_factory() as db:
+            # 1. Resolve or create source entity
+            source_ext = ExtractedEntity(name=source_entity, entity_type="System", epistemic_state="REFLEX")
+            source = await _upsert_entity(db, ns_id, source_ext)
+
+            # 2. Resolve or create target entity
+            target_ext = ExtractedEntity(name=target_entity, entity_type="System", epistemic_state="REFLEX")
+            target = await _upsert_entity(db, ns_id, target_ext)
+
+            # 3. Create or update the relationship as a reflex
+            stmt = select(Relationship).where(
+                and_(
+                    Relationship.source_entity_id == source.id,
+                    Relationship.target_entity_id == target.id,
+                    Relationship.relation_type == relation_type,
+                )
+            )
+            res = await db.execute(stmt)
+            existing = res.scalar_one_or_none()
+
+            if existing:
+                existing.trigger_condition = trigger_condition
+                existing.executable_payload = executable_payload
+                existing.epistemic_state = "REFLEX"
+                existing.status = "ACTIVE"
+                existing.last_reinforced_at = datetime.now(timezone.utc)
+                await db.flush()
+                await update_relationship_confidence(db, existing)
+                rel_id = existing.id
+            else:
+                rel = Relationship(
+                    source_entity_id=source.id,
+                    target_entity_id=target.id,
+                    relation_type=relation_type,
+                    epistemic_state="REFLEX",
+                    weight=1.0,
+                    source_diversity_count=1,
+                    confidence=1.0,
+                    has_contradiction=False,
+                    trigger_condition=trigger_condition,
+                    executable_payload=executable_payload,
+                    status="ACTIVE",
+                )
+                db.add(rel)
+                await db.flush()
+                await update_relationship_confidence(db, rel)
+                rel_id = rel.id
+
+            await db.commit()
+            return (
+                f"Reflex stored successfully.\n"
+                f"  ID: {rel_id}\n"
+                f"  Namespace: {namespace_name}\n"
+                f"  Trigger: {trigger_condition}\n"
+                f"  Payload: {executable_payload[:200]}..."
+            )
+    except Exception as e:
+        return f"Error storing reflex: {e}"
+
+
+# ────────────────────────────────────────────────────────────────────
+# Tool: report_reflex_failure
+# ────────────────────────────────────────────────────────────────────
+@mcp.tool()
+async def report_reflex_failure(
+    namespace_name: str,
+    reflex_relationship_id: str,
+) -> str:
+    """
+    Explicitly report that a reflex standing order failed during execution.
+    This will instantly freeze (PAUSE) the reflex, set its confidence to
+    the minimum floor (0.01), and revert it to a standard declarative FACT,
+    forcing the agent to fall back to standard reasoning on the very next attempt.
+
+    Args:
+        namespace_name: Name of the namespace the reflex belongs to.
+        reflex_relationship_id: The UUID string of the reflex relationship that failed.
+
+    Returns:
+        Confirmation message detailing the penalty and fallback status.
+    """
+    from app.models import Relationship, Entity, AuditLog
+    from app.services.confidence import CONFIDENCE_FLOOR
+    from sqlalchemy import and_
+
+    ns_id = await _resolve_namespace(namespace_name)
+    if not ns_id:
+        return f"Error: Namespace '{namespace_name}' not found."
+
+    try:
+        rel_uuid = uuid.UUID(reflex_relationship_id)
+    except ValueError:
+        return f"Error: Invalid reflex relationship UUID: '{reflex_relationship_id}'."
+
+    try:
+        async with async_session_factory() as db:
+            # Query the relationship, ensuring it belongs to the namespace
+            stmt = (
+                select(Relationship)
+                .join(Entity, Relationship.source_entity_id == Entity.id)
+                .where(
+                    and_(
+                        Relationship.id == rel_uuid,
+                        Entity.namespace_id == ns_id,
+                    )
+                )
+            )
+            res = await db.execute(stmt)
+            rel = res.scalar_one_or_none()
+
+            if not rel:
+                return f"Error: Reflex relationship '{reflex_relationship_id}' not found in namespace '{namespace_name}'."
+
+            # Revert reflex to a paused standard fact with confidence floor
+            rel.epistemic_state = "FACT"
+            rel.status = "PAUSED"
+            rel.confidence = CONFIDENCE_FLOOR
+            await db.flush()
+
+            # Log reflex failure event to AuditLog
+            entry = AuditLog(
+                namespace_id=ns_id,
+                action="reflex_failed",
+                entity_name=f"Reflex: {rel_uuid}",
+                result_count=1,
+                role_used="internal"
+            )
+            db.add(entry)
+            await db.flush()
+
+            await db.commit()
+            return (
+                f"Reflex failure reported successfully.\n"
+                f"  Reflex ID: {reflex_relationship_id}\n"
+                f"  Status: PAUSED\n"
+                f"  Confidence: 0.01 (Penalized to floor)\n"
+                f"  Epistemic State: Reverted to FACT\n"
+                f"  Fallback: Standard reasoning has been restored immediately."
+            )
+    except Exception as e:
+        return f"Error reporting reflex failure: {e}"
 
 
 # ────────────────────────────────────────────────────────────────────

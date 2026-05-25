@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models import Entity, Namespace, Relationship, Memory
-from app.prompts import DISAMBIGUATION_SYSTEM_PROMPT, CONTRADICTION_SYSTEM_PROMPT
+from app.prompts import DISAMBIGUATION_SYSTEM_PROMPT, CONTRADICTION_SYSTEM_PROMPT, PROCEDURAL_COMPRESSION_PROMPT
 from app.schemas import DisambiguationResult, ContradictionResult
 
 logger = logging.getLogger("synapse.services.sleep")
@@ -28,7 +28,7 @@ LLM_MODEL = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-20250514")
 async def run_sleep_cycle(namespace_id: uuid.UUID) -> None:
     """
     Main orchestrator for the sleep cycle.
-    Runs Entity Disambiguation followed by Contradiction Pruning.
+    Runs Entity Disambiguation followed by Contradiction Pruning, and then Reflex Consolidation.
     """
     from app.database import async_session_factory
 
@@ -38,6 +38,7 @@ async def run_sleep_cycle(namespace_id: uuid.UUID) -> None:
         try:
             await _run_entity_disambiguation(db, namespace_id)
             await _run_contradiction_pruning(db, namespace_id)
+            await consolidate_reflexes(db, namespace_id)
             await db.commit()
             logger.info(f"Completed sleep cycle for namespace: {namespace_id}")
         except Exception as e:
@@ -203,3 +204,130 @@ async def _run_contradiction_pruning(db: AsyncSession, namespace_id: uuid.UUID) 
             logger.warning(f"Invalid UUID returned by LLM: {resolution.relationship_id}")
             
     logger.info(f"Contradiction pruning complete. Pruned {pruned_count} relationships.")
+
+
+async def consolidate_reflexes(db: AsyncSession, namespace_id: uuid.UUID) -> None:
+    """
+    Look for repetitive workflows / multi-hop reasoning chains in recent AuditLogs and Memories,
+    and compress them into REFLEX edges.
+    """
+    logger.info(f"Consolidating reflexes for namespace: {namespace_id}")
+    
+    from app.models import AuditLog, Memory, Entity, Relationship
+    from app.services.core import _upsert_entity
+    from app.schemas import ExtractedEntity
+    from app.services.confidence import update_relationship_confidence
+    from sqlalchemy import desc
+    from pydantic import BaseModel, Field
+    import json
+    from datetime import datetime, timezone
+    
+    # 1. Fetch recent AuditLogs
+    logs_stmt = select(AuditLog).where(AuditLog.namespace_id == namespace_id).order_by(desc(AuditLog.created_at)).limit(100)
+    logs_res = await db.execute(logs_stmt)
+    logs = logs_res.scalars().all()
+    
+    # 2. Fetch recent Memories
+    mems_stmt = select(Memory).where(Memory.namespace_id == namespace_id).order_by(desc(Memory.created_at)).limit(30)
+    mems_res = await db.execute(mems_stmt)
+    mems = mems_res.scalars().all()
+    
+    if not logs and not mems:
+        logger.info("No audit logs or memories found. Skipping reflex consolidation.")
+        return
+        
+    # Serialize logs and memories for LLM
+    log_texts = []
+    for l in logs:
+        log_texts.append(f"[{l.created_at.isoformat()}] Action: {l.action} | Entity: {l.entity_name} | Role: {l.role_used}")
+    
+    mem_texts = []
+    for m in mems:
+        mem_texts.append(f"[{m.created_at.isoformat()}] Memory: {m.content} (Metadata: {json.dumps(m.metadata_)})")
+        
+    context = "RECENT AUDIT LOGS:\n" + "\n".join(log_texts[:50]) + "\n\nRECENT MEMORIES:\n" + "\n".join(mem_texts[:20])
+    
+    # Define LLM Response schema for structured output
+    class ProposedReflex(BaseModel):
+        trigger_condition: dict[str, Any] = Field(description="JSON pattern that activates this reflex, e.g., {'query': 'pr review', 'repo': 'frontend'}")
+        executable_payload: str = Field(description="The standing order or collapsed prompt for the agent to execute immediately without reasoning.")
+        source_entity: str = Field(default="User", description="Source entity name, usually 'User'")
+        target_entity: str = Field(default="Cerebellum", description="Target entity name, usually 'Cerebellum'")
+        relation_type: str = Field(default="REFLEX", description="Relationship/verb type, usually 'REFLEX'")
+        reasoning: str = Field(description="Explanation of why this reflex is proposed based on the repetitive pattern detected.")
+        
+    class ReflexConsolidationResult(BaseModel):
+        reflexes: list[ProposedReflex] = Field(default_factory=list)
+        
+    try:
+        response = await litellm.acompletion(
+            model=LLM_MODEL,
+            messages=[
+                {"role": "system", "content": PROCEDURAL_COMPRESSION_PROMPT},
+                {"role": "user", "content": f"Analyze this context for procedural memory consolidation:\n\n{context}"},
+            ],
+            response_format=ReflexConsolidationResult,
+            temperature=0.0,
+        )
+        raw = response.choices[0].message.content
+        result = ReflexConsolidationResult.model_validate_json(raw)
+    except Exception as e:
+        logger.warning(f"Reflex consolidation LLM call failed: {e}")
+        return
+        
+    consolidated_count = 0
+    for reflex in result.reflexes:
+        logger.info(f"LLM proposed reflex: {reflex.reasoning}")
+        try:
+            # Upsert source and target entities
+            source_ext = ExtractedEntity(name=reflex.source_entity, entity_type="System", epistemic_state="REFLEX")
+            source = await _upsert_entity(db, namespace_id, source_ext)
+            
+            target_ext = ExtractedEntity(name=reflex.target_entity, entity_type="System", epistemic_state="REFLEX")
+            target = await _upsert_entity(db, namespace_id, target_ext)
+            
+            # Create or update relationship
+            stmt = select(Relationship).where(
+                and_(
+                    Relationship.source_entity_id == source.id,
+                    Relationship.target_entity_id == target.id,
+                    Relationship.relation_type == reflex.relation_type,
+                )
+            )
+            rel_res = await db.execute(stmt)
+            existing = rel_res.scalar_one_or_none()
+            
+            if existing:
+                existing.trigger_condition = reflex.trigger_condition
+                existing.executable_payload = reflex.executable_payload
+                existing.epistemic_state = "REFLEX"
+                if not existing.status:
+                    existing.status = "PROPOSED"
+                existing.last_reinforced_at = datetime.now(timezone.utc)
+                await db.flush()
+                await update_relationship_confidence(db, existing)
+            else:
+                rel = Relationship(
+                    source_entity_id=source.id,
+                    target_entity_id=target.id,
+                    relation_type=reflex.relation_type,
+                    epistemic_state="REFLEX",
+                    weight=1.0,
+                    source_diversity_count=1,
+                    confidence=1.0,
+                    has_contradiction=False,
+                    trigger_condition=reflex.trigger_condition,
+                    executable_payload=reflex.executable_payload,
+                    status="PROPOSED",
+                )
+                db.add(rel)
+                await db.flush()
+                await update_relationship_confidence(db, rel)
+                
+            consolidated_count += 1
+            logger.info(f"Consolidated reflex: {reflex.source_entity} -[{reflex.relation_type}]→ {reflex.target_entity}")
+        except Exception as ex:
+            logger.error(f"Failed to save consolidated reflex: {ex}", exc_info=True)
+            
+    logger.info(f"Reflex consolidation complete. Created/updated {consolidated_count} reflexes.")
+

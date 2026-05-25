@@ -242,6 +242,15 @@ class Relationship(Base):
         nullable=True,
         default=None,
     )
+    trigger_condition: Mapped[dict | None] = mapped_column(
+        JSONB, nullable=True, default=None
+    )
+    executable_payload: Mapped[str | None] = mapped_column(
+        Text, nullable=True, default=None
+    )
+    status: Mapped[str | None] = mapped_column(
+        String(32), nullable=True, default=None
+    )
 
     @property
     def decayed_weight(self) -> float:

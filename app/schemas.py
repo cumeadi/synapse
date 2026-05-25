@@ -97,6 +97,15 @@ class HybridSearchRequest(BaseModel):
     )
 
 
+class ReflexStatusUpdate(BaseModel):
+    """Request body for updating a reflex status."""
+    status: str = Field(
+        ...,
+        description="The new status of the reflex (PROPOSED|ACTIVE|PAUSED)",
+        examples=["ACTIVE"],
+    )
+
+
 # ────────────────────────────────────────────────────────────────────
 # API Response Schemas
 # ────────────────────────────────────────────────────────────────────
@@ -167,6 +176,9 @@ class GraphRelationshipResponse(BaseModel):
     confidence: float = 0.5
     has_contradiction: bool = False
     epistemic_state: str = "FACT"
+    trigger_condition: Optional[dict[str, Any]] = None
+    executable_payload: Optional[str] = None
+    status: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
@@ -256,6 +268,8 @@ class StudioNodeResponse(BaseModel):
     id: str  # VisNetwork expects string IDs
     label: str
     group: str
+    confidence: Optional[float] = 0.5
+    epistemic_state: Optional[str] = "FACT"
     
 class StudioEdgeResponse(BaseModel):
     id: str
@@ -263,6 +277,12 @@ class StudioEdgeResponse(BaseModel):
     from_: str = Field(alias="from")
     label: str
     weight: float
+    confidence: Optional[float] = 0.5
+    has_contradiction: Optional[bool] = False
+    epistemic_state: Optional[str] = "FACT"
+    trigger_condition: Optional[dict[str, Any]] = None
+    executable_payload: Optional[str] = None
+    status: Optional[str] = None
 
 class StudioGraphResponse(BaseModel):
     nodes: List[StudioNodeResponse]

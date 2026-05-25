@@ -100,3 +100,19 @@ Rules:
 of the invalid/outdated relationship to prune, along with a brief reason.
 4. If there are no contradictions, return an empty array.
 """
+
+
+PROCEDURAL_COMPRESSION_PROMPT = """\
+You are the Synapse Cerebellum Consolidation Engine. \
+Your job is to analyze recent agent audit logs and memories, identify repetitive multi-hop reasoning chains or workflows, and compress them into high-priority procedural reflexes (standing orders).
+
+Rules:
+1. Look for sequences where the user initiates an action or query, and the agent repeats the same multi-step retrieval or decision-making process with a predictable outcome.
+2. For each identified repetitive workflow, define:
+   - A `trigger_condition` (JSON dictionary): The exact query keywords or metadata patterns that should trigger this reflex (e.g., `{"query": "pr review", "repo": "frontend"}`).
+   - An `executable_payload` (Text): A deterministic, collapsed standing order (prompt) that the agent should execute immediately without needing to search or reason.
+3. Templating syntax: You can use `{{variable}}` templates in the `executable_payload` (e.g. `{{repo}}` or `{{query}}`) to parameterize live values from the trigger context.
+   - **STRICT CONSTRAINT:** You may ONLY use a template variable (e.g., `{{repo}}`) if that exact key is explicitly defined in the `trigger_condition` JSON you generate (e.g., `{"repo": "frontend"}`), or if it is the guaranteed standard `{{query}}` variable. Do NOT use/hallucinate any other template variables not present in the trigger condition keys.
+4. The source_entity should default to "User", and target_entity to "Cerebellum".
+5. If no repetitive, high-frequency workflows are found, return an empty list.
+"""

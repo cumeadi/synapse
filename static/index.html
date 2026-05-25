@@ -115,6 +115,38 @@
                         </div>
                     </div>
                     
+                    <!-- Cerebellum Reflex Controls -->
+                    <div id="reflex-card" class="mb-4 border-t border-gray-700 pt-4 hidden">
+                        <div class="bg-gray-900 border border-blue-500 border-opacity-30 rounded-lg p-3 shadow-inner">
+                            <div class="flex justify-between items-center mb-2">
+                                <label class="block text-xs font-bold text-blue-400 uppercase tracking-wider">Cerebellum Reflex</label>
+                                <span id="reflex-status-badge" class="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-gray-700 text-gray-300">Proposed</span>
+                            </div>
+                            
+                            <div class="mb-2">
+                                <span class="block text-[10px] text-gray-500 font-semibold mb-0.5">Trigger Condition</span>
+                                <pre id="reflex-trigger" class="text-xs text-gray-300 bg-gray-950 p-1.5 rounded overflow-x-auto max-h-24 font-mono border border-gray-800"></pre>
+                            </div>
+                            
+                            <div class="mb-3">
+                                <span class="block text-[10px] text-gray-500 font-semibold mb-0.5">Executable Template</span>
+                                <pre id="reflex-payload" class="text-xs text-gray-300 bg-gray-950 p-1.5 rounded overflow-y-auto max-h-24 break-all whitespace-pre-wrap font-mono border border-gray-800"></pre>
+                            </div>
+                            
+                            <div class="flex space-x-1.5">
+                                <button id="reflex-activate-btn" class="flex-1 bg-green-600 hover:bg-green-700 text-white font-bold py-1.5 px-1 rounded text-[10px] transition-colors flex items-center justify-center shadow-sm">
+                                    Activate ⚡️
+                                </button>
+                                <button id="reflex-pause-btn" class="flex-1 bg-yellow-600 hover:bg-yellow-700 text-white font-bold py-1.5 px-1 rounded text-[10px] transition-colors flex items-center justify-center shadow-sm">
+                                    Pause ⏸️
+                                </button>
+                                <button id="reflex-delete-btn" class="flex-1 bg-red-600 hover:bg-red-700 text-white font-bold py-1.5 px-1 rounded text-[10px] transition-colors flex items-center justify-center shadow-sm">
+                                    Delete 🗑️
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- Tracing info -->
                     <div class="mb-4 border-t border-gray-700 pt-4">
                         <label class="block text-xs font-medium text-gray-400 uppercase tracking-wider mb-2">Origin Trace</label>

@@ -33,6 +33,71 @@ LLM_MODEL = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-20250514")
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
 
 
+def is_reflex_triggered(query: str, metadata_filter: Optional[dict], trigger_condition: dict) -> bool:
+    if not trigger_condition:
+        return False
+    
+    # 1. If we have metadata_filter, check if trigger_condition matches it
+    if metadata_filter:
+        meta_match = True
+        for k, v in trigger_condition.items():
+            if k == "query":
+                continue
+            if metadata_filter.get(k) != v:
+                meta_match = False
+                break
+        if meta_match:
+            if "query" in trigger_condition:
+                q_val = str(trigger_condition["query"]).lower()
+                if q_val in query.lower() or query.lower() in q_val:
+                    return True
+            else:
+                return True
+    
+    # 2. Check if the query itself triggers it
+    if "query" in trigger_condition:
+        q_val = str(trigger_condition["query"]).lower()
+        if q_val in query.lower() or query.lower() in q_val:
+            return True
+            
+    # Fallback: keyword containment
+    all_values_match = True
+    for k, v in trigger_condition.items():
+        val_str = str(v).lower()
+        in_query = val_str in query.lower()
+        in_metadata = False
+        if metadata_filter:
+            in_metadata = any(val_str in str(mv).lower() for mv in metadata_filter.values())
+        if not (in_query or in_metadata):
+            all_values_match = False
+            break
+    if all_values_match:
+        return True
+        
+    return False
+
+
+def render_template(payload: str, context: dict) -> str:
+    import re
+    def replacer(match):
+        var_name = match.group(1).strip()
+        return str(context.get(var_name, match.group(0)))
+    return re.sub(r"\{\{([^}]+)\}\}", replacer, payload)
+
+
+async def _write_reflex_audit_log(db: AsyncSession, namespace_id: uuid.UUID, reflex_id: uuid.UUID, action: str) -> None:
+    from app.models import AuditLog
+    entry = AuditLog(
+        namespace_id=namespace_id,
+        action=action,
+        entity_name=f"Reflex: {reflex_id}",
+        result_count=1,
+        role_used="internal"
+    )
+    db.add(entry)
+    await db.flush()
+
+
 # ────────────────────────────────────────────────────────────────────
 # Memory Ingestion (Background Task)
 # ────────────────────────────────────────────────────────────────────
@@ -207,6 +272,8 @@ async def _upsert_relationship(
         
         await update_relationship_confidence(db, existing)
         await db.flush()
+        await detect_and_flag_contradictions(db, source.id, target.id)
+        await db.flush()
         return existing
 
     rel = Relationship(
@@ -225,6 +292,8 @@ async def _upsert_relationship(
     
     await update_relationship_confidence(db, rel)
     await db.flush()
+    await detect_and_flag_contradictions(db, source.id, target.id)
+    await db.flush()
     return rel
 
 
@@ -242,6 +311,63 @@ async def hybrid_search(
     Semantic search using pgvector cosine distance with optional
     JSONB metadata containment filter.
     """
+    # ── Cerebellum Reflex Check ──────────────────────────────────────────
+    import json
+    from app.models import Entity
+    reflexes_stmt = select(Relationship).options(
+        selectinload(Relationship.source_entity),
+        selectinload(Relationship.target_entity),
+    ).join(Entity, Relationship.source_entity_id == Entity.id).where(
+        and_(
+            Entity.namespace_id == namespace_id,
+            Relationship.epistemic_state == "REFLEX"
+        )
+    )
+    reflexes_res = await db.execute(reflexes_stmt)
+    reflexes = reflexes_res.scalars().all()
+    
+    triggered_reflexes = []
+    for reflex in reflexes:
+        if reflex.trigger_condition and is_reflex_triggered(query, metadata_filter, reflex.trigger_condition):
+            triggered_reflexes.append(reflex)
+            
+    if triggered_reflexes:
+        triggered_reflexes.sort(key=lambda r: (r.confidence, r.weight), reverse=True)
+        active_reflexes = [r for r in triggered_reflexes if r.status in (None, "ACTIVE")]
+        proposed_reflexes = [r for r in triggered_reflexes if r.status == "PROPOSED"]
+        
+        if active_reflexes:
+            best_reflex = active_reflexes[0]
+            logger.info(f"Cerebellum REFLEX triggered in hybrid search: {best_reflex.id}")
+            
+            await _write_reflex_audit_log(db, namespace_id, best_reflex.id, "reflex_triggered")
+            
+            context = {"query": query}
+            if metadata_filter:
+                context.update({k: str(v) for k, v in metadata_filter.items()})
+                
+            rendered_payload = render_template(best_reflex.executable_payload or "", context)
+            
+            return [
+                {
+                    "id": best_reflex.id,
+                    "content": f"[STANDING ORDER]\nTrigger: {json.dumps(best_reflex.trigger_condition)}\nAction: {rendered_payload}",
+                    "metadata": {
+                        "source": "cerebellum",
+                        "is_reflex": True,
+                        "trigger_condition": best_reflex.trigger_condition,
+                        "executable_payload": rendered_payload,
+                        "confidence": best_reflex.confidence,
+                        "status": best_reflex.status or "ACTIVE",
+                    },
+                    "score": 1.0,
+                    "created_at": best_reflex.last_reinforced_at,
+                }
+            ]
+        elif proposed_reflexes:
+            best_reflex = proposed_reflexes[0]
+            logger.info(f"Cerebellum SHADOW REFLEX triggered in hybrid search: {best_reflex.id}")
+            await _write_reflex_audit_log(db, namespace_id, best_reflex.id, "reflex_shadow_triggered")
     query_embedding = await _generate_embedding(query)
 
     # Cosine similarity = 1 - cosine_distance
@@ -266,7 +392,7 @@ async def hybrid_search(
             "id": memory.id,
             "content": memory.content,
             "metadata": memory.metadata_,
-            "score": round(float(score), 4),
+            "score": round(float(score), 4) if score is not None else 0.0,
             "created_at": memory.created_at,
         }
         for memory, score in rows
@@ -301,6 +427,51 @@ async def graph_search(
 
     if not center:
         return None
+
+    # ── Cerebellum Reflex Check in Graph Search ─────────────────────────
+    reflexes_stmt = select(Relationship).options(
+        selectinload(Relationship.source_entity),
+        selectinload(Relationship.target_entity),
+    ).where(
+        and_(
+            Relationship.source_entity_id == center.id,
+            Relationship.epistemic_state == "REFLEX"
+        )
+    )
+    reflexes_res = await db.execute(reflexes_stmt)
+    reflexes = reflexes_res.scalars().all()
+    
+    triggered_reflexes = []
+    for reflex in reflexes:
+        if reflex.trigger_condition and is_reflex_triggered(entity_name, None, reflex.trigger_condition):
+            triggered_reflexes.append(reflex)
+            
+    if triggered_reflexes:
+        triggered_reflexes.sort(key=lambda r: (r.confidence, r.weight), reverse=True)
+        active_reflexes = [r for r in triggered_reflexes if r.status in (None, "ACTIVE")]
+        proposed_reflexes = [r for r in triggered_reflexes if r.status == "PROPOSED"]
+        
+        if active_reflexes:
+            best_reflex = active_reflexes[0]
+            logger.info(f"Cerebellum REFLEX triggered in graph search: {best_reflex.id}")
+            
+            await _write_reflex_audit_log(db, namespace_id, best_reflex.id, "reflex_triggered")
+            
+            context = {"query": entity_name}
+            rendered_payload = render_template(best_reflex.executable_payload or "", context)
+            
+            best_reflex.executable_payload = rendered_payload
+            
+            return {
+                "center": center,
+                "depth": depth,
+                "entities": [center, best_reflex.target_entity],
+                "relationships": [best_reflex],
+            }
+        elif proposed_reflexes:
+            best_reflex = proposed_reflexes[0]
+            logger.info(f"Cerebellum SHADOW REFLEX triggered in graph search: {best_reflex.id}")
+            await _write_reflex_audit_log(db, namespace_id, best_reflex.id, "reflex_shadow_triggered")
 
     if depth < 1:
         depth = 1

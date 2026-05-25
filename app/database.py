@@ -122,4 +122,18 @@ async def init_db():
             "epistemic_state VARCHAR(16) DEFAULT 'FACT' NOT NULL"
         ))
 
+        # Phase 5: Cerebellum Engine — Reflex Edges
+        await conn.execute(text(
+            "ALTER TABLE relationships ADD COLUMN IF NOT EXISTS "
+            "trigger_condition JSONB"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE relationships ADD COLUMN IF NOT EXISTS "
+            "executable_payload TEXT"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE relationships ADD COLUMN IF NOT EXISTS "
+            "status VARCHAR(32) DEFAULT NULL"
+        ))
+
     logger.info("Database initialized successfully.")

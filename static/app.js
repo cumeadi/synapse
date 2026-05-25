@@ -140,34 +140,22 @@ function setupEventListeners() {
 
     closeInspectorBtn.addEventListener('click', closeInspector);
 
-    deleteBtn.addEventListener('click', async () => {
-        if (!selectedElement || !currentNamespaceId) return;
-        
-        const isNode = selectedElement.type === 'node';
-        const type = isNode ? 'entities' : 'relationships';
-        const msg = isNode ? 
-            "Delete this entity and all its connections?" : 
-            "Delete this relationship?";
-            
-        if (confirm(msg)) {
-            try {
-                const res = await fetch(`/namespaces/${currentNamespaceId}/${type}/${selectedElement.id}`, {
-                    method: 'DELETE',
-                    headers: { 'X-API-Key': apiKey }
-                });
-                
-                if (res.ok || res.status === 204) {
-                    closeInspector();
-                    fetchGraph(); // Reload to reflect deletion
-                } else {
-                    const data = await res.json();
-                    alert(`Error: ${data.detail || 'Could not delete item'}`);
-                }
-            } catch (err) {
-                console.error("Delete failed", err);
-                alert("Network error during deletion.");
-            }
+    deleteBtn.addEventListener('click', deleteSelectedElement);
+
+    document.getElementById('reflex-activate-btn').addEventListener('click', () => {
+        if (selectedElement && selectedElement.type === 'edge') {
+            updateReflexStatus(selectedElement.id, 'ACTIVE');
         }
+    });
+
+    document.getElementById('reflex-pause-btn').addEventListener('click', () => {
+        if (selectedElement && selectedElement.type === 'edge') {
+            updateReflexStatus(selectedElement.id, 'PAUSED');
+        }
+    });
+
+    document.getElementById('reflex-delete-btn').addEventListener('click', () => {
+        deleteSelectedElement();
     });
 
     apiKeySubmit.addEventListener('click', () => {
@@ -398,6 +386,41 @@ function openEdgeInspector(edgeId) {
     document.getElementById('edge-weight-bar').style.width = `${weightCalc}%`;
     document.getElementById('edge-weight').textContent = edgeData.weight;
     
+    // Cerebellum Reflex Card
+    const reflexCard = document.getElementById('reflex-card');
+    if (edgeData.trigger_condition || edgeData.executable_payload) {
+        reflexCard.classList.remove('hidden');
+        
+        // Populate trigger condition
+        const triggerPre = document.getElementById('reflex-trigger');
+        if (edgeData.trigger_condition) {
+            triggerPre.textContent = JSON.stringify(edgeData.trigger_condition, null, 2);
+        } else {
+            triggerPre.textContent = 'None';
+        }
+        
+        // Populate executable template
+        const payloadPre = document.getElementById('reflex-payload');
+        payloadPre.textContent = edgeData.executable_payload || 'None';
+        
+        // Status Badge
+        const status = edgeData.status || 'PROPOSED';
+        const badge = document.getElementById('reflex-status-badge');
+        badge.textContent = status;
+        
+        // Dynamic styling for status
+        badge.className = "px-2 py-0.5 rounded text-[10px] font-bold uppercase border";
+        if (status === 'ACTIVE') {
+            badge.classList.add('bg-green-900', 'bg-opacity-50', 'text-green-300', 'border-green-700');
+        } else if (status === 'PROPOSED') {
+            badge.classList.add('bg-yellow-900', 'bg-opacity-50', 'text-yellow-300', 'border-yellow-700');
+        } else {
+            badge.classList.add('bg-red-900', 'bg-opacity-50', 'text-red-300', 'border-red-700');
+        }
+    } else {
+        reflexCard.classList.add('hidden');
+    }
+    
     // Fetch trace logic
     document.getElementById('trace-loading').classList.remove('hidden');
     document.getElementById('trace-content').classList.add('hidden');
@@ -450,6 +473,68 @@ function closeInspector() {
     selectedElement = null;
     inspectorPanel.classList.add('translate-x-full');
     if (network) network.unselectAll();
+}
+
+async function deleteSelectedElement() {
+    if (!selectedElement || !currentNamespaceId) return;
+    
+    const isNode = selectedElement.type === 'node';
+    const type = isNode ? 'entities' : 'relationships';
+    const msg = isNode ? 
+        "Delete this entity and all its connections?" : 
+        "Delete this relationship?";
+        
+    if (confirm(msg)) {
+        try {
+            const res = await fetch(`/namespaces/${currentNamespaceId}/${type}/${selectedElement.id}`, {
+                method: 'DELETE',
+                headers: { 'X-API-Key': apiKey }
+            });
+            
+            if (res.ok || res.status === 204) {
+                closeInspector();
+                fetchGraph(); // Reload to reflect deletion
+            } else {
+                const data = await res.json();
+                alert(`Error: ${data.detail || 'Could not delete item'}`);
+            }
+        } catch (err) {
+            console.error("Delete failed", err);
+            alert("Network error during deletion.");
+        }
+    }
+}
+
+async function updateReflexStatus(edgeId, newStatus) {
+    if (!currentNamespaceId) return;
+    try {
+        const res = await fetch(`/namespaces/${currentNamespaceId}/relationships/${edgeId}/status`, {
+            method: 'PATCH',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-API-Key': apiKey
+            },
+            body: JSON.stringify({ status: newStatus })
+        });
+        
+        if (res.ok) {
+            // Update local edge data so we don't have to fully re-query if not desired
+            const edgeData = currentGraphData.edges.find(e => e.id === edgeId);
+            if (edgeData) {
+                edgeData.status = newStatus;
+            }
+            // Re-render open edge inspector to reflect new status
+            openEdgeInspector(edgeId);
+            // Refresh graph visualization to ensure everything is up to date
+            fetchGraph();
+        } else {
+            const data = await res.json();
+            alert(`Error: ${data.detail || 'Could not update status'}`);
+        }
+    } catch (err) {
+        console.error("Status update failed", err);
+        alert("Network error updating status.");
+    }
 }
 
 // Boot

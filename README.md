@@ -18,9 +18,27 @@ Synapse is different. It doesn't just store data; it reasons about it. By combin
 
 * **Relational Graph Memory:** Synapse extracts entities and relationships from raw text during ingestion. If a user says "I hate Java," it explicitly maps `[User] -> [DISLIKES] -> [Java]`. No more fuzzy cosine-distance guessing.
 * **The "Sleep" Cycle:** Background workers periodically synthesize sprawling conversational history into high-value "core principles," archiving the noise.
+* **The "Cerebellum" Engine:** Collapses recurring agent workflows into zero-token, low-latency **Procedural Reflexes** (Standing Orders) governed by safe Human-in-the-Loop (HITL) states.
 * **Self-Healing Updates:** When new information contradicts old logs, Synapse automatically prunes outdated nodes and rewires relationships.
 * **Native MCP Server:** Out-of-the-box Model Context Protocol support. Plug it directly into Claude Desktop, Cursor, or Windsurf in seconds.
 * **Synapse Studio:** A built-in, local visualizer. Stop interacting with your AI's memory via a blind CLI. See the graph, click the nodes, and prune hallucinations manually.
+
+---
+
+## ⚡ The "Cerebellum" Engine (Procedural Memory)
+
+Traditional memory models only map *what* an agent knows (`[User] -> (LIKES) -> [Python]`). However, agents still must spend expensive LLM tokens retrieving these facts, reasoning over them, and choosing actions on every single turn.
+
+The **Cerebellum Engine** solves this by expanding Synapse's background sleep cycle to monitor recurring agent workflows, identify repetitive multi-hop reasoning chains, and collapse them into **Procedural Reflexes** (deterministic standing orders).
+
+### ⚙️ How it Works:
+1. **Procedural Compression:** Background workers analyze chronological history and compile repetitive workflows into `PROPOSED` reflexes (e.g. *"When a PR is pushed to frontend, format the code"*).
+2. **Shadow Reflexes (HITL Governance):** Newly consolidated reflexes default to `PROPOSED`. They act as a shadow layer: logging telemetry (`reflex_shadow_triggered`) without intercepting queries. Developers review and promote them to `ACTIVE` via the Synapse Studio UI or REST API.
+3. **Parameter Template Substitution:** Payloads accept variables (e.g., `Run tests in {{repo}} for {{query}}`), dynamically rendering substituting values from active metadata filters.
+4. **Self-Healing & Reversion:** If a reflex fails, calling `report_reflex_failure` instantly freezes (PAUSES) the reflex, drops confidence to `0.01` (floor), and reverts it to a standard declarative `FACT` so standard agent reasoning takes back control instantly.
+
+### 🛡️ Studio Kill Switch
+Reflexes are fully inspectable. Synapse Studio features a dedicated **Cerebellum Card** inside the relationship inspector, displaying status badges and one-click buttons to **Activate ⚡️**, **Pause ⏸️**, or **Delete 🗑️** standing orders instantly.
 
 ---
 

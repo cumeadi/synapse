@@ -148,7 +148,12 @@ async def detect_and_flag_contradictions(
     has_contradiction = len(relation_types) >= 2
 
     for rel in rels:
-        if rel.has_contradiction != has_contradiction:
+        if rel.epistemic_state == "REFLEX" and has_contradiction:
+            rel.epistemic_state = "FACT"
+            rel.confidence = CONFIDENCE_FLOOR
+            rel.has_contradiction = True
+            logger.info(f"Reflex relationship {rel.id} contradicted! Reverting to FACT with confidence floor.")
+        elif rel.has_contradiction != has_contradiction:
             rel.has_contradiction = has_contradiction
             await update_relationship_confidence(db, rel)
 

@@ -52,6 +52,7 @@ from app.schemas import (
     EdgeTraceResponse,
     NamespaceListResponse,
     WebhookEventResponse,
+    ReflexStatusUpdate,
 )
 from app.services import graph_search, hybrid_search, ingest_memory, run_sleep_cycle
 from app.connectors.github import ingest_github_repo
@@ -618,6 +619,31 @@ async def trace_graph_relationship(
         
     trace_data = await trace_relationship(db, namespace_id, relationship_id)
     return EdgeTraceResponse(**trace_data)
+
+
+@app.patch("/namespaces/{namespace_id}/relationships/{relationship_id}/status")
+async def update_reflex_status_route(
+    namespace_id: uuid.UUID,
+    relationship_id: uuid.UUID,
+    body: ReflexStatusUpdate,
+    db: AsyncSession = Depends(get_db),
+    _auth: Optional[ApiKey] = Depends(verify_api_key),
+):
+    """Update the governance/HITL status of a reflex relationship (PROPOSED|ACTIVE|PAUSED)."""
+    ns = await db.get(Namespace, namespace_id)
+    if not ns:
+        raise HTTPException(status_code=404, detail="Namespace not found.")
+        
+    status_upper = body.status.upper()
+    if status_upper not in ("PROPOSED", "ACTIVE", "PAUSED"):
+        raise HTTPException(status_code=400, detail="Invalid status. Must be PROPOSED, ACTIVE, or PAUSED.")
+        
+    from app.services.studio import update_reflex_status
+    success = await update_reflex_status(db, namespace_id, relationship_id, status_upper)
+    if not success:
+        raise HTTPException(status_code=404, detail="Reflex relationship not found in this namespace.")
+        
+    return {"status": status_upper, "message": "Reflex status updated successfully."}
 
 
 # ────────────────────────────────────────────────────────────────────
